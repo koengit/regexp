@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleInstances #-}
 module RegExp where
 
 import Control.Monad( liftM, liftM2 )
@@ -18,6 +19,7 @@ data R a
   | R a :&: R a
   | R a :>: R a
   | Star (R a)
+  | X -- hack to get holes
  deriving (Eq, Ord, Show)
 
 (.+.),(.&.),(.>.) :: R a -> R a -> R a
@@ -67,6 +69,30 @@ rec p []     = eps p
 rec p (x:xs) = rec (step p x) xs
 
 --------------------------------------------------------------------------------
+-- properties, complete?
+
+prop_Nil s =
+  rec Nil s == False
+
+prop_Eps s =
+  rec Eps s == null s
+
+prop_Atom a s =
+  rec (Atom a) s == (s == [a])
+
+prop_Plus p q s =
+  rec (p :+: q) s == (rec p s || rec q s)
+
+prop_And p q s =
+  rec (p :&: q) s == undefined
+
+prop_Seq p q s =
+  rec (p :>: q) s == undefined -- hard one
+
+prop_Star p s =
+  rec (Star p) s == rec ((p :>: Star p) :+: Eps) s
+
+--------------------------------------------------------------------------------
 -- properties, all falsifiable
 
 prop_SeqComm p q =
@@ -113,8 +139,10 @@ data L = A | B | C deriving ( Eq, Ord, Show, Read, Enum )
 instance Arbitrary L where
   arbitrary = elements [A ..]
 
-instance Arbitrary a => Arbitrary (R a) where
-  arbitrary = sized go
+instance Arbitrary (R L) where
+  arbitrary = sized (\n -> arb n pats X)
+    {-
+    sized go
     where
       go s = frequency
         [(1,return Nil)
@@ -128,6 +156,7 @@ instance Arbitrary a => Arbitrary (R a) where
         where
          s2 = s`div`2
          s1 = pred s
+    -}
 
   shrink Eps       = [Nil]
   shrink (Atom a)  = [ Atom a' | a' <- shrink a ]
@@ -145,4 +174,59 @@ instance Arbitrary a => Arbitrary (R a) where
   shrink _         = []
 
 --------------------------------------------------------------------------------
+
+arb :: Eq a => Int -> [R a] -> R a -> Gen (R a)
+arb n pats pat =
+  do pat' <- elements [ p =:= pat
+                      | p <- pats
+                      , n > 0 || closed p
+                      , p =?= pat
+                      ]
+     step n pats pat'
+ where
+  n1 = n-1
+  n2 = n `div` 2
+ 
+  step n pats (p :+: q) = liftM2 (:+:) (arb n2 pats p) (arb n2 pats q)
+  step n pats (p :>: q) = liftM2 (:>:) (arb n2 pats p) (arb n2 pats q)
+  step n pats (p :&: q) = liftM2 (:&:) (arb n2 pats p) (arb n2 pats q)
+  step n pats (Star p)  = liftM  Star  (arb n1 pats p)
+  step n pats p         = return p
+ 
+  closed (p :+: q) = closed p && closed q
+  closed (p :&: q) = closed p && closed q
+  closed (p :>: q) = closed p && closed q
+  closed (Star p)  = closed p
+  closed X         = False
+  closed _         = True
+
+  X         =?= _         = True
+  _         =?= X         = True
+  (p :+: q) =?= (v :+: w) = (p =?= v) && (q =?= w)
+  (p :>: q) =?= (v :>: w) = (p =?= v) && (q =?= w)
+  (p :&: q) =?= (v :&: w) = (p =?= v) && (q =?= w)
+  Star p    =?= Star v    = p =?= v
+  p         =?= q         = p == q
+
+  X         =:= v         = v
+  p         =:= X         = p
+  (p :+: q) =:= (v :+: w) = (p =:= v) :+: (q =:= w)
+  (p :>: q) =:= (v :>: w) = (p =:= v) :>: (q =:= w)
+  (p :&: q) =:= (v :&: w) = (p =:= v) :&: (q =:= w)
+  Star p    =:= Star v    = Star (p =:= v)
+  p         =:= _         = p -- should be equal
+
+pats :: [R L]
+pats = [ X :+: X
+       , X :>: X
+       , X :&: X
+       , Star X
+       , Atom A
+       , Atom B
+       , Atom C
+       , Eps
+       , Nil
+       , X .>. (X .+. Eps)
+       , X .>. (X .+. Eps) .&. X .>. (X .+. Eps)
+       ]
 
